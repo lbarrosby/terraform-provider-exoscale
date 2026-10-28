@@ -10,6 +10,7 @@ FEATURES:
 FEATURES:
 
 - `exoscale_dbaas`: new `thanos` Database service type.
+- `exoscale_nlb_service`: new `label_selector` attribute to forward traffic to the instances carrying all the listed key/value labels. `instance_pool_id` becomes optional, as at least one of the two is required. Removing `label_selector` from the configuration removes the selector, which the API rejects when the service has no instance pool. An empty `label_selector` map is rejected at plan time, as the API holds either labels or no selector at all. (#639)
 
 IMPROVEMENTS:
 
@@ -24,6 +25,11 @@ BUG FIXES:
 - `exoscale_kms_key`: changing only `timeouts` no longer fails the apply.
 - `exoscale_kms_key`: a change that replaces a key without changing its `name` now fails at plan time. The key used to be scheduled for deletion, then its replacement failed to be created because the name stays reserved during the deletion delay.
 - `exoscale_kms_key`: API errors now show their title and detail.
+
+DEPENDENCIES:
+
+- Bump `github.com/exoscale/egoscale/v3` to v3.1... (A [WIP branch](https://github.com/exoscale/egoscale/pull/841) is currently used because the public-api changes haven't been deployed yet.) (#639)
+
 
 ## 0.76.0
 
