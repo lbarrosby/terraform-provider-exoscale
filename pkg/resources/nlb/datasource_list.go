@@ -155,11 +155,11 @@ Corresponding resource: [exoscale_nlb](../resources/nlb.md).`,
 							AttributeTypes: HealthcheckModel{}.Types(),
 						},
 						NLBServiceAttrInstancePoolID: schema.StringAttribute{
-							MarkdownDescription: "The [exoscale_instance_pool](./instance_pool.md) (ID) to forward traffic to. It is null for a service forwarding traffic to a label selector only.",
+							MarkdownDescription: "The [exoscale_instance_pool](./instance_pool.md) (ID) to forward traffic to.",
 							Computed:            true,
 						},
 						NLBServiceAttrLabelSelector: schema.MapAttribute{
-							MarkdownDescription: "The instance labels the service forwards traffic to, as key/value pairs. An instance is a backend when it carries all the listed pairs. It is null for a service without a label selector.",
+							MarkdownDescription: "The instance labels the service forwards traffic to, as key/value pairs. An instance is a backend when it carries all the listed pairs.",
 							ElementType:         types.StringType,
 							Computed:            true,
 						},
