@@ -14,6 +14,7 @@ import (
 	"github.com/exoscale/terraform-provider-exoscale/pkg/utils"
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -45,7 +46,6 @@ const (
 
 var _ resource.Resource = (*ResourceService)(nil)
 var _ resource.ResourceWithImportState = (*ResourceService)(nil)
-var _ resource.ResourceWithValidateConfig = (*ResourceService)(nil)
 
 type ResourceService struct {
 	client *exoscale.Client
@@ -118,6 +118,9 @@ func (r *ResourceService) Schema(ctx context.Context, req resource.SchemaRequest
 				Description:         "❗ The exoscale_instance_pool (ID) to forward traffic to. Either instance_pool_id or label_selector must be specified.",
 				MarkdownDescription: "❗ The [exoscale_instance_pool](./instance_pool.md) (ID) to forward traffic to. Either `instance_pool_id` or `label_selector` must be specified.",
 				Optional:            true,
+				Validators: []validator.String{
+					stringvalidator.AtLeastOneOf(path.MatchRoot("label_selector")),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -127,6 +130,9 @@ func (r *ResourceService) Schema(ctx context.Context, req resource.SchemaRequest
 				MarkdownDescription: "Labels of instances to forward traffic to, as key/value pairs. Labels are matched exactly, including case and trailing spaces. Only instances in the same organization and zone as the NLB are candidates. An instance is a backend when it carries **all** the listed pairs, and the map must hold at least one pair. If `instance_pool_id` is also specified, the backends are the union of both. Removing the attribute removes the selector, which is rejected by the API if the service has no `instance_pool_id`. Either `label_selector` or `instance_pool_id` must be specified.",
 				ElementType:         types.StringType,
 				Optional:            true,
+				Validators: []validator.Map{
+					mapvalidator.SizeAtLeast(1),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description:         "The NLB service name.",
@@ -237,53 +243,6 @@ func (r *ResourceService) Configure(ctx context.Context, req resource.ConfigureR
 	r.client = req.ProviderData.(*providerConfig.ExoscaleProviderConfig).ClientV3
 }
 
-// ValidateConfig rejects two configurations that the API would refuse, so that
-// the problem surfaces during `terraform plan` rather than after the NLB and
-// the instance pool have been created. A service needs an instance pool, a
-// label selector, or both, and a label selector needs at least one label.
-//
-// An empty selector cannot be supported, as the API returns either label pairs
-// or no selector at all. `label_selector = {}` could therefore never be read
-// back, and the resource would report drift on every plan.
-func (r *ResourceService) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	// The configuration can arrive with no attributes at all, its object value
-	// null rather than an object whose attributes are each null. Get cannot
-	// decode a null object into the model, and neither check below has anything
-	// to go on, so return early.
-	if req.Config.Raw.IsNull() {
-		return
-	}
-
-	var data ResourceServiceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// A value that is not yet known is not null, so an instance pool created in
-	// the same apply counts as set, and so does an unknown selector.
-	if data.InstancePoolID.IsNull() && data.LabelSelector.IsNull() {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("instance_pool_id"),
-			"missing NLB service backend",
-			"either `instance_pool_id` or `label_selector` must be set",
-		)
-	}
-
-	if data.LabelSelector.IsNull() || data.LabelSelector.IsUnknown() {
-		return
-	}
-
-	if len(data.LabelSelector.Elements()) == 0 {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("label_selector"),
-			"invalid NLB service label selector",
-			"the label selector requires at least one label pair: remove the attribute to remove the selector",
-		)
-	}
-}
-
 func (r *ResourceService) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan ResourceServiceModel
 
@@ -318,7 +277,7 @@ func (r *ResourceService) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	// The instance pool is optional, as a service can take its backends from a
-	// label selector alone. ValidateConfig makes sure that one of the two is
+	// label selector alone. The schema validators make sure one of the two is
 	// set.
 	var ipool *exoscale.InstancePool
 	if !plan.InstancePoolID.IsNull() {

@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -82,7 +83,10 @@ func TestLabelSelectorFromAPI(t *testing.T) {
 	}), selector)
 }
 
-func TestResourceServiceValidateConfig(t *testing.T) {
+// TestResourceServiceBackendValidators checks the schema validators on the two
+// backend attributes. A service requires an instance pool, a label selector, or
+// both, and a label selector requires at least one label.
+func TestResourceServiceBackendValidators(t *testing.T) {
 	t.Parallel()
 
 	const poolID = "5bea9f0a-4b0b-4b0b-8b0b-0b0b0b0b0b0b"
@@ -108,6 +112,15 @@ func TestResourceServiceValidateConfig(t *testing.T) {
 		{
 			name: "unknown label selector",
 			values: map[string]tftypes.Value{
+				"instance_pool_id": strValue(poolID),
+				"label_selector":   tftypes.NewValue(labelSelectorType, tftypes.UnknownValue),
+			},
+		},
+		{
+			// Both backend values are unknown or null, so AtLeastOneOf defers the
+			// check rather than rejecting the configuration.
+			name: "null pool, unknown selector",
+			values: map[string]tftypes.Value{
 				"label_selector": tftypes.NewValue(labelSelectorType, tftypes.UnknownValue),
 			},
 		},
@@ -129,60 +142,61 @@ func TestResourceServiceValidateConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := &resource.ValidateConfigResponse{}
+			ctx := context.Background()
+			s := serviceSchema(t)
+			config := serviceConfig(t, tt.values)
 
-			(&ResourceService{}).ValidateConfig(
-				context.Background(),
-				resource.ValidateConfigRequest{Config: serviceConfig(t, tt.values)},
-				resp,
+			var (
+				poolIDValue    types.String
+				labelValue     types.Map
+				poolPath       = path.Root("instance_pool_id")
+				labelPath      = path.Root("label_selector")
+				poolAttribute  = s.Attributes["instance_pool_id"].(schema.StringAttribute)
+				labelAttribute = s.Attributes["label_selector"].(schema.MapAttribute)
+				diags          diag.Diagnostics
 			)
 
-			assertErrorPaths(t, resp.Diagnostics, tt.wantError)
-		})
-	}
-}
+			diags.Append(config.GetAttribute(ctx, poolPath, &poolIDValue)...)
+			diags.Append(config.GetAttribute(ctx, labelPath, &labelValue)...)
+			require.False(t, diags.HasError(), "%v", diags.Errors())
 
-// TestResourceServiceValidateConfigDestroy checks that a configuration with no
-// attributes at all is accepted, its object value being null rather than an
-// object whose attributes are each null. Unlike the table test's null
-// attributes, a null object cannot be decoded into the model, and the checks
-// have nothing to go on.
-func TestResourceServiceValidateConfigDestroy(t *testing.T) {
-	t.Parallel()
-
-	s := serviceSchema(t)
-
-	resp := &resource.ValidateConfigResponse{}
-	(&ResourceService{}).ValidateConfig(
-		context.Background(),
-		resource.ValidateConfigRequest{Config: tfsdk.Config{
-			Schema: s,
-			Raw: tftypes.NewValue(
-				s.Type().TerraformType(context.Background()).(tftypes.Object),
-				nil,
-			),
-		}},
-		resp,
-	)
-
-	require.False(t, resp.Diagnostics.HasError())
-}
-
-// assertErrorPaths checks that diags holds exactly one error per expected path.
-func assertErrorPaths(t *testing.T, diags diag.Diagnostics, want []path.Path) {
-	t.Helper()
-
-	errs := diags.Errors()
-	require.Len(t, errs, len(want), "%v", errs)
-
-	for _, p := range want {
-		found := false
-		for _, d := range errs {
-			if dp, ok := d.(diag.DiagnosticWithPath); ok && dp.Path().Equal(p) {
-				found = true
+			// The framework runs these validators on its own during a plan, but
+			// calling them directly keeps the test independent of a real run.
+			for _, v := range poolAttribute.Validators {
+				resp := &validator.StringResponse{}
+				v.ValidateString(ctx, validator.StringRequest{
+					Path:           poolPath,
+					PathExpression: poolPath.Expression(),
+					Config:         config,
+					ConfigValue:    poolIDValue,
+				}, resp)
+				diags.Append(resp.Diagnostics...)
 			}
-		}
-		require.True(t, found, "missing error on %s: %v", p, errs)
+
+			for _, v := range labelAttribute.Validators {
+				resp := &validator.MapResponse{}
+				v.ValidateMap(ctx, validator.MapRequest{
+					Path:           labelPath,
+					PathExpression: labelPath.Expression(),
+					Config:         config,
+					ConfigValue:    labelValue,
+				}, resp)
+				diags.Append(resp.Diagnostics...)
+			}
+
+			errs := diags.Errors()
+			require.Len(t, errs, len(tt.wantError), "%v", errs)
+
+			for _, p := range tt.wantError {
+				found := false
+				for _, d := range errs {
+					if dp, ok := d.(diag.DiagnosticWithPath); ok && dp.Path().Equal(p) {
+						found = true
+					}
+				}
+				require.True(t, found, "missing error on %s: %v", p, errs)
+			}
+		})
 	}
 }
 
